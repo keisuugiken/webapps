@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Object Detection</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Style to overlay canvas on top of the video */
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px; /* Limit max size */
+            margin: auto;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            /* This is the key fix: maintain a 16:9 aspect ratio */
+            padding-top: 56.25%; /* 9 / 16 = 0.5625 */
+        }
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 0.75rem;
+        }
+        video {
+            transform: scaleX(-1); /* Mirror the video feed */
+        }
+        canvas {
+            background: transparent;
+        }
+        #loading-indicator {
+            transition: opacity 0.5s;
+        }
+    </style>
+     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl text-center">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">AI Object Detection</h1>
+        <p class="text-gray-600 mb-6">This app uses the COCO-SSD model with TensorFlow.js to identify objects from your webcam feed in real-time. Please grant camera permissions when prompted.</p>
+
+        <div id="video-container" class="bg-black">
+            <!-- The webcam feed will be displayed here -->
+            <video id="webcam" autoplay muted playsinline></video>
+            <!-- The detection boxes will be drawn on this canvas -->
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div id="loading-indicator" class="mt-4 p-4 bg-blue-100 text-blue-800 rounded-lg shadow">
+            <p id="loading-text" class="font-semibold">Loading AI Model... Please wait.</p>
+        </div>
+
+    </div>
+
+    <!-- TensorFlow.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <!-- COCO-SSD model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const loadingText = document.getElementById('loading-text');
+        
+        let model = undefined;
+
+        /**
+         * Main function to set up camera and start detection.
+         */
+        async function setup() {
+            // 1. Load the COCO-SSD model.
+            try {
+                model = await cocoSsd.load();
+                loadingText.textContent = 'Model loaded! Requesting camera access...';
+            } catch (err) {
+                console.error("Error loading model: ", err);
+                loadingText.textContent = 'Error loading AI model. Please refresh.';
+                loadingIndicator.classList.replace('bg-blue-100', 'bg-red-100');
+                loadingIndicator.classList.replace('text-blue-800', 'text-red-800');
+                return;
+            }
+
+            // 2. Get access to the webcam.
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user' },
+                    audio: false 
+                });
+                video.srcObject = stream;
+                
+                video.addEventListener('loadeddata', () => {
+                    // Once video data is loaded, match canvas dimensions and start detection.
+                    console.log("Camera feed loaded.");
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    // Use a timeout to ensure the loading indicator transition is visible
+                    setTimeout(() => {
+                        loadingIndicator.style.opacity = '0';
+                    }, 500);
+                    
+                    // Start the detection loop.
+                    detectFrame();
+                });
+            } catch (err) {
+                console.error("Error accessing webcam: ", err);
+                loadingText.textContent = 'Could not access webcam. Please check permissions and refresh.';
+                loadingIndicator.classList.replace('bg-blue-100', 'bg-red-100');
+                loadingIndicator.classList.replace('text-blue-800', 'text-red-800');
+            }
+        }
+        
+        /**
+         * Runs object detection on a single frame from the video feed.
+         * Made more robust with a try/finally block.
+         */
+        async function detectFrame() {
+            try {
+                // Only run detection if the model is loaded and the video has data.
+                if (model && video.readyState >= 3) { // readyState 3 is HAVE_FUTURE_DATA
+                    const predictions = await model.detect(video);
+                    renderPredictions(predictions);
+                }
+            } catch (err) {
+                console.error("Error during detection loop: ", err);
+            } finally {
+                // Crucially, keep the loop going even if an error occurred.
+                requestAnimationFrame(detectFrame);
+            }
+        }
+
+        /**
+         * Renders the detection results (bounding boxes and labels) on the canvas.
+         * @param {Array} predictions - An array of prediction objects from the model.
+         */
+        function renderPredictions(predictions) {
+            const ctx = canvas.getContext('2d');
+            
+            // Clear the canvas from previous drawings.
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+            // Set up font and colors for drawing.
+            const font = "16px sans-serif";
+            ctx.font = font;
+            ctx.textBaseline = "top";
+
+            predictions.forEach(prediction => {
+                // The bounding box co-ordinates.
+                const [x, y, width, height] = prediction.bbox;
+
+                // Since the video is mirrored, we need to flip the x-coordinate.
+                const mirroredX = ctx.canvas.width - x - width;
+                
+                // --- Draw the Bounding Box ---
+                ctx.strokeStyle = "#00FFFF"; // Cyan color
+                ctx.lineWidth = 2;
+                ctx.strokeRect(mirroredX, y, width, height);
+
+                // --- Draw the Label Background ---
+                ctx.fillStyle = "#00FFFF";
+                const textWidth = ctx.measureText(prediction.class).width;
+                const textHeight = parseInt(font, 10); // Approximation
+                ctx.fillRect(mirroredX, y, textWidth + 10, textHeight + 4);
+
+                // --- Draw the Label Text ---
+                ctx.fillStyle = "#000000"; // Black text
+                ctx.fillText(prediction.class, mirroredX + 5, y + 2);
+            });
+        }
+        
+        // Start the application.
+        setup();
+
+    </script>
+</body>
+</html>
